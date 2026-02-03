@@ -1,16 +1,17 @@
 [workspace]
 resolver = "3"
 members = [
-  "crates/x402-types",
-  "crates/x402-axum",
-  "crates/x402-reqwest",
-  "crates/x402-facilitator-local",
-  "crates/chains/x402-chain-eip155",
-  "crates/chains/x402-chain-solana",
-  "crates/chains/x402-chain-aptos",
-  "facilitator",
-  "examples/x402-axum-example",
-  "examples/x402-reqwest-example",
+	"crates/x402-types",
+	"crates/x402-axum",
+	"crates/x402-reqwest",
+	"crates/x402-facilitator-local",
+	"crates/chains/x402-chain-eip155",
+	"crates/chains/x402-chain-solana",
+	"crates/chains/x402-chain-aptos",
+	"crates/chains/x402-chain-hypercore",
+	"facilitator",
+	"examples/x402-axum-example",
+	"examples/x402-reqwest-example",
 ]
 
 [workspace.package]
@@ -22,18 +23,24 @@ repository = "https://github.com/x402-rs/x402-rs"
 homepage = "https://x402.rs"
 rust-version = "1.88.0"
 keywords = ["blockchain", "payments", "x402", "stablecoin", "http-402"]
-categories = ["cryptography::cryptocurrencies", "finance", "network-programming", "web-programming::http-server"]
+categories = [
+	"cryptography::cryptocurrencies",
+	"finance",
+	"network-programming",
+	"web-programming::http-server",
+]
 
 [workspace.dependencies]
 x402-axum = { version = "1.0", path = "crates/x402-axum" }
 x402-chain-aptos = { version = "1.0", path = "crates/chains/x402-chain-aptos" }
 x402-chain-eip155 = { version = "1.0", path = "crates/chains/x402-chain-eip155" }
+x402-chain-hypercore = { version = "1.0", path = "crates/chains/x402-chain-hypercore" }
 x402-chain-solana = { version = "1.0", path = "crates/chains/x402-chain-solana" }
 x402-facilitator-local = { version = "1.0", path = "crates/x402-facilitator-local" }
 x402-reqwest = { version = "1.0", path = "crates/x402-reqwest" }
 x402-types = { version = "1.0", path = "crates/x402-types" }
 
-alloy-primitives = { version = "1.4.1" } # To represent token amounts
+alloy-primitives = { version = "1.4.1" }                   # To represent token amounts
 async-trait = { version = "0.1" }
 axum = { version = "0.8" }
 dotenvy = { version = "0.15.7" }

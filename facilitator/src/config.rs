@@ -21,11 +21,11 @@
 //!   "chains": {
 //!     "eip155:84532": {
 //!       "rpc_url": "https://sepolia.base.org",
-//!       "signer_private_key": "0x..."
+//!       "signer": "0x..."
 //!     },
 //!     "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp": {
 //!       "rpc_url": "https://api.devnet.solana.com",
-//!       "signer_private_key": "base58..."
+//!       "signer": "base58..."
 //!     }
 //!   }
 //! }
@@ -43,6 +43,10 @@ use x402_chain_aptos::chain::config::{AptosChainConfig, AptosChainConfigInner};
 use x402_chain_eip155::chain as eip155;
 #[cfg(feature = "chain-eip155")]
 use x402_chain_eip155::chain::config::{Eip155ChainConfig, Eip155ChainConfigInner};
+#[cfg(feature = "chain-hypercore")]
+use x402_chain_hypercore::chain as hypercore;
+#[cfg(feature = "chain-hypercore")]
+use x402_chain_hypercore::chain::{HyperCoreChainConfig, HyperCoreChainConfigInner};
 #[cfg(feature = "chain-solana")]
 use x402_chain_solana::chain as solana;
 #[cfg(feature = "chain-solana")]
@@ -57,8 +61,8 @@ pub type Config = x402_types::config::Config<ChainsConfig>;
 /// Configuration for a specific chain.
 ///
 /// This enum represents chain-specific configuration that varies by chain family
-/// (EVM vs Solana vs Aptos). The chain family is determined by the CAIP-2 prefix of the
-/// chain identifier key (e.g., "eip155:" for EVM, "solana:" for Solana, "aptos:" for Aptos).
+/// (EVM vs Solana vs Aptos vs HyperCore). The chain family is determined by the CAIP-2 prefix of the
+/// chain identifier key (e.g., "eip155:" for EVM, "solana:" for Solana, "aptos:" for Aptos, "hypercore:" for HyperCore).
 #[derive(Debug, Clone)]
 pub enum ChainConfig {
     /// EVM chain configuration (for chains with "eip155:" prefix).
@@ -70,6 +74,9 @@ pub enum ChainConfig {
     /// Aptos chain configuration (for chains with "aptos:" prefix).
     #[cfg(feature = "chain-aptos")]
     Aptos(Box<AptosChainConfig>),
+    /// HyperCore chain configuration (for chains with "hypercore:" prefix).
+    #[cfg(feature = "chain-hypercore")]
+    HyperCore(Box<HyperCoreChainConfig>),
 }
 
 /// Configuration for chains.
@@ -113,6 +120,12 @@ impl Serialize for ChainsConfig {
                 }
                 #[cfg(feature = "chain-aptos")]
                 ChainConfig::Aptos(config) => {
+                    let chain_id = config.chain_id();
+                    let inner = &config.inner;
+                    map.serialize_entry(&chain_id, inner)?;
+                }
+                #[cfg(feature = "chain-hypercore")]
+                ChainConfig::HyperCore(config) => {
                     let chain_id = config.chain_id();
                     let inner = &config.inner;
                     map.serialize_entry(&chain_id, inner)?;
@@ -185,6 +198,17 @@ impl<'de> Deserialize<'de> for ChainsConfig {
                                 inner,
                             };
                             ChainConfig::Aptos(Box::new(config))
+                        }
+                        #[cfg(feature = "chain-hypercore")]
+                        hypercore::HYPERCORE_NAMESPACE => {
+                            let inner: HyperCoreChainConfigInner = access.next_value()?;
+                            let config = HyperCoreChainConfig {
+                                chain_reference: chain_id
+                                    .try_into()
+                                    .map_err(|e| serde::de::Error::custom(format!("{}", e)))?,
+                                inner,
+                            };
+                            ChainConfig::HyperCore(Box::new(config))
                         }
                         _ => {
                             return Err(serde::de::Error::custom(format!(

@@ -39,6 +39,8 @@ use x402_types::scheme::{X402SchemeFacilitator, X402SchemeFacilitatorBuilder};
 use x402_chain_aptos::V2AptosExact;
 #[cfg(feature = "chain-eip155")]
 use x402_chain_eip155::{V1Eip155Exact, V2Eip155Exact};
+#[cfg(feature = "chain-hypercore")]
+use x402_chain_hypercore::V2HyperCoreExact;
 #[cfg(feature = "chain-solana")]
 use x402_chain_solana::{V1SolanaExact, V2SolanaExact};
 
@@ -124,5 +126,24 @@ impl X402SchemeFacilitatorBuilder<&ChainProvider> for V1Eip155Exact {
             return Err("V1Eip155Exact::build: provider must be an Eip155ChainProvider".into());
         };
         self.build(eip155_provider, config)
+    }
+}
+
+#[cfg(feature = "chain-hypercore")]
+impl X402SchemeFacilitatorBuilder<&ChainProvider> for V2HyperCoreExact {
+    fn build(
+        &self,
+        provider: &ChainProvider,
+        config: Option<serde_json::Value>,
+    ) -> Result<Box<dyn X402SchemeFacilitator>, Box<dyn std::error::Error>> {
+        #[allow(irrefutable_let_patterns)]
+        let hypercore_provider = if let ChainProvider::HyperCore(provider) = provider {
+            Arc::clone(provider)
+        } else {
+            return Err(
+                "V2HyperCoreExact::build: provider must be a HyperCoreChainProvider".into(),
+            );
+        };
+        self.build(hypercore_provider, config)
     }
 }

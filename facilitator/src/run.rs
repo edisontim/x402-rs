@@ -44,6 +44,8 @@ use x402_types::scheme::{SchemeBlueprints, SchemeRegistry};
 use x402_chain_aptos::V2AptosExact;
 #[cfg(feature = "chain-eip155")]
 use x402_chain_eip155::{V1Eip155Exact, V2Eip155Exact};
+#[cfg(feature = "chain-hypercore")]
+use x402_chain_hypercore::V2HyperCoreExact;
 #[cfg(feature = "chain-solana")]
 use x402_chain_solana::{V1SolanaExact, V2SolanaExact};
 #[cfg(feature = "telemetry")]
@@ -95,6 +97,10 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(feature = "chain-aptos")]
         {
             scheme_blueprints.register(V2AptosExact);
+        }
+        #[cfg(feature = "chain-hypercore")]
+        {
+            scheme_blueprints.register(V2HyperCoreExact);
         }
         scheme_blueprints
     };
