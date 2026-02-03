@@ -39,6 +39,7 @@ pub struct UsdcExtra {
 /// ```json
 /// {
 ///   "hyperliquidChain": "Testnet",
+///   "signatureChainId": "0xa4b1",
 ///   "destination": "0x...",
 ///   "amount": "1",
 ///   "time": 1234567890,
@@ -51,6 +52,10 @@ pub struct UsdcExtra {
 pub struct HyperCorePayload {
     /// Chain identifier ("Mainnet" or "Testnet").
     pub hyperliquid_chain: String,
+    /// The chain ID used for EIP-712 signing (hex format, e.g., "0xa4b1" for Arbitrum).
+    /// Defaults to "0xa4b1" if not provided.
+    #[serde(default = "default_signature_chain_id")]
+    pub signature_chain_id: String,
     /// Destination address (42-character hex).
     pub destination: String,
     /// Amount of USD to send as a string (e.g., "1" for $1).
@@ -63,14 +68,17 @@ pub struct HyperCorePayload {
     pub signature: String,
 }
 
+fn default_signature_chain_id() -> String {
+    "0xa4b1".to_string()
+}
+
 impl HyperCorePayload {
     /// Convert to a usdSend action structure for verification.
     pub fn to_usd_send_action(&self) -> HyperCoreUsdSendAction {
         HyperCoreUsdSendAction {
             action_type: "usdSend".to_string(),
             hyperliquid_chain: self.hyperliquid_chain.clone(),
-            // Default to Arbitrum chain ID for signing
-            signature_chain_id: "0xa4b1".to_string(),
+            signature_chain_id: self.signature_chain_id.clone(),
             destination: self.destination.clone(),
             amount: self.amount.clone(),
             time: self.time,

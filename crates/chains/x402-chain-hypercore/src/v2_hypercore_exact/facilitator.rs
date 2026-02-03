@@ -91,6 +91,8 @@ pub struct VerifyTransferResult {
     pub signature: String,
     /// The nonce (timestamp used as nonce).
     pub nonce: u64,
+    /// The token being transferred (e.g., "USDC:0" for spot USDC).
+    pub token: String,
 }
 
 /// Verify a HyperCore transfer request.
@@ -159,8 +161,8 @@ pub async fn verify_transfer(
     // Use the payload timestamp as the nonce
     let nonce = hypercore_payload.time;
 
-    // Recover the signer address from the EIP-712 signature
-    let payer = recover_signer_from_usd_send(&action, signature)?;
+    // Recover the signer address from the EIP-712 signature (spotSend)
+    let payer = recover_signer_from_spot_send(&action, &hypercore_payload.token, signature)?;
 
     // Optionally verify the payer has sufficient balance
     // This is a soft check - the settlement will fail if insufficient
@@ -189,25 +191,46 @@ pub async fn verify_transfer(
         action,
         signature: signature.clone(),
         nonce,
+        token: hypercore_payload.token.clone(),
     })
 }
 
 /// Settle a verified transfer by submitting it to HyperCore.
 ///
-/// This function forwards the user's pre-signed `usdSend` action to the HyperCore
-/// exchange API. The user has already signed the action, and the facilitator
-/// submits it on their behalf.
+/// This function forwards the user's pre-signed `spotSend` action to the HyperCore
+/// exchange API using the SDK. The user has already signed the action, and the
+/// facilitator submits it on their behalf using a dummy signer.
 pub async fn settle_transaction(
     provider: &HyperCoreChainProvider,
     verification: VerifyTransferResult,
 ) -> Result<String, PaymentVerificationError> {
-    // Build the API URL based on chain
-    let api_url = match provider.chain_reference() {
-        HyperCoreChainReference::Mainnet => "https://api.hyperliquid.xyz/exchange",
-        HyperCoreChainReference::Testnet => "https://api.hyperliquid-testnet.xyz/exchange",
+    use alloy::primitives::Signature;
+    use alloy::signers::local::PrivateKeySigner;
+    use hyperliquid_rust_sdk::{BaseUrl, ExchangeClient};
+
+    // Dummy private key - we don't sign anything, just forward the user's signature
+    const DUMMY_PRIVATE_KEY: &str =
+        "1111111111111111111111111111111111111111111111111111111111111111";
+
+    let signer: PrivateKeySigner = DUMMY_PRIVATE_KEY
+        .parse()
+        .map_err(|e| PaymentVerificationError::InvalidFormat(format!("Invalid signer: {}", e)))?;
+
+    let base_url = match provider.chain_reference() {
+        HyperCoreChainReference::Mainnet => BaseUrl::Mainnet,
+        HyperCoreChainReference::Testnet => BaseUrl::Testnet,
     };
 
-    // Parse the signature into r, s, v components
+    let exchange_client = ExchangeClient::new(None, signer, Some(base_url), None, None)
+        .await
+        .map_err(|e| {
+            PaymentVerificationError::TransactionSimulation(format!(
+                "Failed to create exchange client: {:?}",
+                e
+            ))
+        })?;
+
+    // Parse the user's signature into alloy's Signature type
     let sig_bytes = hex::decode(
         verification
             .signature
@@ -223,83 +246,47 @@ pub async fn settle_transaction(
         )));
     }
 
-    let r = format!("0x{}", hex::encode(&sig_bytes[0..32]));
-    let s = format!("0x{}", hex::encode(&sig_bytes[32..64]));
-    let v = sig_bytes[64] as u64;
+    let sig_array: [u8; 65] = sig_bytes
+        .try_into()
+        .map_err(|_| PaymentVerificationError::InvalidFormat("Signature not 65 bytes".into()))?;
+    let signature = Signature::try_from(&sig_array[..]).map_err(|e| {
+        PaymentVerificationError::InvalidFormat(format!("Invalid signature format: {}", e))
+    })?;
 
-    // Build the request body
-    let request_body = serde_json::json!({
-        "action": {
-            "type": "usdSend",
-            "hyperliquidChain": verification.action.hyperliquid_chain,
-            "signatureChainId": verification.action.signature_chain_id,
-            "destination": verification.action.destination,
-            "amount": verification.action.amount,
-            "time": verification.action.time
-        },
-        "nonce": verification.nonce,
-        "signature": {
-            "r": r,
-            "s": s,
-            "v": v
-        }
+    // Build the spotSend action for USDC transfer from spot balance
+    let action = serde_json::json!({
+        "type": "spotSend",
+        "hyperliquidChain": verification.action.hyperliquid_chain,
+        "signatureChainId": verification.action.signature_chain_id,
+        "destination": verification.action.destination,
+        "token": verification.token,
+        "amount": verification.action.amount,
+        "time": verification.action.time
     });
 
-    // Submit to HyperCore
-    let client = reqwest::Client::new();
-    let response = client
-        .post(api_url)
-        .header("Content-Type", "application/json")
-        .json(&request_body)
-        .send()
+    // Submit using the SDK's post method
+    #[allow(unused_variables)]
+    let result = exchange_client
+        .post(action.clone(), signature, verification.nonce)
         .await
         .map_err(|e| {
             PaymentVerificationError::TransactionSimulation(format!(
-                "Failed to submit to HyperCore: {}",
+                "HyperCore rejected transfer: {:?}",
                 e
             ))
         })?;
-
-    let status = response.status();
-    let body: serde_json::Value = response.json().await.map_err(|e| {
-        PaymentVerificationError::TransactionSimulation(format!("Failed to parse response: {}", e))
-    })?;
-
-    // Check for success
-    if !status.is_success() {
-        return Err(PaymentVerificationError::TransactionSimulation(format!(
-            "HyperCore API error: {} - {:?}",
-            status, body
-        )));
-    }
-
-    // Check response status
-    let response_status = body.get("status").and_then(|s| s.as_str());
-    if response_status != Some("ok") {
-        let error = body
-            .get("response")
-            .and_then(|r| r.get("data"))
-            .and_then(|d| d.get("statuses"))
-            .and_then(|s| s.get(0))
-            .and_then(|s| s.get("error"))
-            .and_then(|e| e.as_str())
-            .unwrap_or("Unknown error");
-        return Err(PaymentVerificationError::TransactionSimulation(format!(
-            "HyperCore rejected transfer: {}",
-            error
-        )));
-    }
 
     #[cfg(feature = "telemetry")]
     tracing::info!(
         payer = %verification.payer,
         destination = %verification.action.destination,
         amount = %verification.action.amount,
-        "HyperCore transfer settled"
+        token = %verification.token,
+        result = ?result,
+        "HyperCore spot transfer settled"
     );
 
     // Return a transaction identifier
-    // HyperCore doesn't return traditional tx hashes, so we create a unique ID
     let payer_prefix = if verification.payer.len() >= 10 {
         &verification.payer[..10]
     } else {
@@ -312,9 +299,10 @@ pub async fn settle_transaction(
     ))
 }
 
-/// Recover the signer address from a usdSend EIP-712 signature.
-fn recover_signer_from_usd_send(
+/// Recover the signer address from a spotSend EIP-712 signature.
+fn recover_signer_from_spot_send(
     action: &types::HyperCoreUsdSendAction,
+    token: &str,
     signature: &str,
 ) -> Result<String, PaymentVerificationError> {
     use ethers::types::{H256, RecoveryMessage, Signature};
@@ -332,10 +320,10 @@ fn recover_signer_from_usd_send(
         )));
     }
 
-    // Construct the EIP-712 typed data hash for usdSend
+    // Construct the EIP-712 typed data hash for spotSend
     // This follows the Hyperliquid signing spec
     let domain_separator = compute_domain_separator(&action.signature_chain_id)?;
-    let struct_hash = compute_usd_send_struct_hash(action)?;
+    let struct_hash = compute_spot_send_struct_hash(action, token)?;
     let message_hash = compute_typed_data_hash(&domain_separator, &struct_hash);
 
     // Recover the address
@@ -385,26 +373,29 @@ fn compute_domain_separator(chain_id_hex: &str) -> Result<[u8; 32], PaymentVerif
     Ok(keccak256(&encoded))
 }
 
-/// Compute the struct hash for a usdSend action.
-fn compute_usd_send_struct_hash(
+/// Compute the struct hash for a spotSend action.
+fn compute_spot_send_struct_hash(
     action: &types::HyperCoreUsdSendAction,
+    token: &str,
 ) -> Result<[u8; 32], PaymentVerificationError> {
     use ethers::utils::keccak256;
 
-    // Type hash: keccak256("HyperliquidTransaction:UsdSend(string hyperliquidChain,string destination,string amount,uint64 time)")
+    // Type hash: keccak256("HyperliquidTransaction:SpotSend(string hyperliquidChain,string destination,string token,string amount,uint64 time)")
     let type_hash = keccak256(
-        b"HyperliquidTransaction:UsdSend(string hyperliquidChain,string destination,string amount,uint64 time)",
+        b"HyperliquidTransaction:SpotSend(string hyperliquidChain,string destination,string token,string amount,uint64 time)",
     );
 
     let chain_hash = keccak256(action.hyperliquid_chain.as_bytes());
     let destination_hash = keccak256(action.destination.as_bytes());
+    let token_hash = keccak256(token.as_bytes());
     let amount_hash = keccak256(action.amount.as_bytes());
 
     // Encode and hash
-    let mut encoded = Vec::with_capacity(160);
+    let mut encoded = Vec::with_capacity(192);
     encoded.extend_from_slice(&type_hash);
     encoded.extend_from_slice(&chain_hash);
     encoded.extend_from_slice(&destination_hash);
+    encoded.extend_from_slice(&token_hash);
     encoded.extend_from_slice(&amount_hash);
     encoded.extend_from_slice(&encode_u64(action.time));
 

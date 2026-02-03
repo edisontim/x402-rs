@@ -24,6 +24,7 @@ facilitator = [
 	"url",
 	"hex",
 	"hyperliquid_rust_sdk",
+	"alloy",
 	"ethers",
 	"reqwest",
 ]
@@ -40,7 +41,8 @@ async-trait = { workspace = true, optional = true }
 hex = { version = "0.4.3", optional = true }
 
 # HyperCore SDK
-hyperliquid_rust_sdk = { version = "0.6", optional = true }
+hyperliquid_rust_sdk = { git = "https://github.com/edisontim/hyperliquid-rust-sdk", branch = "feat/qol-rebased", optional = true }
+alloy = { version = "1.4", features = ["signers"], optional = true }
 ethers = { version = "2.0", optional = true }
 reqwest = { version = "0.12", features = ["json"], optional = true }
 
