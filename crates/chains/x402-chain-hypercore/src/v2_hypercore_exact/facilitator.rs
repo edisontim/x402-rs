@@ -85,11 +85,11 @@ impl X402SchemeFacilitator for V2HyperCoreExactFacilitator {
 pub struct VerifyTransferResult {
     /// The payer's address.
     pub payer: String,
-    /// The verified action.
+    /// The verified action (constructed from the payload).
     pub action: types::HyperCoreUsdSendAction,
     /// The signature.
     pub signature: String,
-    /// The nonce.
+    /// The nonce (timestamp used as nonce).
     pub nonce: u64,
 }
 
@@ -114,62 +114,55 @@ pub async fn verify_transfer(
         return Err(PaymentVerificationError::UnsupportedChain);
     }
 
-    // Extract the action and signature
+    // Extract the flat payload fields
     let hypercore_payload = &payload.payload;
-    let action = &hypercore_payload.action;
     let signature = &hypercore_payload.signature;
-    let nonce = hypercore_payload.nonce;
 
-    // Validate action type
-    if action.action_type != "usdSend" {
+    // Validate token is USDC
+    if hypercore_payload.token != "USDC" {
         return Err(PaymentVerificationError::InvalidFormat(format!(
-            "Expected usdSend action, got {}",
-            action.action_type
+            "Expected USDC token, got {}",
+            hypercore_payload.token
         )));
     }
 
     // Validate chain matches
     let expected_chain = provider.chain_reference().as_api_str();
-    if action.hyperliquid_chain != expected_chain {
+    if hypercore_payload.hyperliquid_chain != expected_chain {
         return Err(PaymentVerificationError::InvalidFormat(format!(
             "Chain mismatch: expected {}, got {}",
-            expected_chain, action.hyperliquid_chain
+            expected_chain, hypercore_payload.hyperliquid_chain
         )));
     }
 
     // Validate destination matches pay_to
-    let expected_recipient = requirements.pay_to.to_string().to_lowercase();
-    let action_destination = action.destination.to_lowercase();
-    if action_destination != expected_recipient {
+    let expected_recipient = requirements.pay_to.to_lowercase();
+    let payload_destination = hypercore_payload.destination.to_lowercase();
+    if payload_destination != expected_recipient {
         return Err(PaymentVerificationError::RecipientMismatch);
     }
 
     // Validate amount
+    // The requirements amount is in micro-units (e.g., 1000000 = $1)
+    // The payload amount is in USD (e.g., "1" = $1)
     let expected_amount = USDC::parse_amount(&requirements.amount).map_err(|e| {
         PaymentVerificationError::InvalidFormat(format!("Failed to parse expected amount: {}", e))
     })?;
-    let action_amount = USDC::parse_amount(&action.amount).map_err(|e| {
-        PaymentVerificationError::InvalidFormat(format!("Failed to parse action amount: {}", e))
+    let payload_amount = USDC::parse_amount(&hypercore_payload.amount).map_err(|e| {
+        PaymentVerificationError::InvalidFormat(format!("Failed to parse payload amount: {}", e))
     })?;
-    if action_amount != expected_amount {
+    if payload_amount != expected_amount {
         return Err(PaymentVerificationError::InvalidPaymentAmount);
     }
 
-    // Validate the timestamp is reasonable (within 5 minutes of nonce)
-    let time_diff = if action.time > nonce {
-        action.time - nonce
-    } else {
-        nonce - action.time
-    };
-    if time_diff > 300_000 {
-        // 5 minutes
-        return Err(PaymentVerificationError::InvalidFormat(
-            "Timestamp and nonce mismatch exceeds 5 minutes".to_string(),
-        ));
-    }
+    // Convert flat payload to action structure for signature verification
+    let action = hypercore_payload.to_usd_send_action();
+
+    // Use the payload timestamp as the nonce
+    let nonce = hypercore_payload.time;
 
     // Recover the signer address from the EIP-712 signature
-    let payer = recover_signer_from_usd_send(action, signature)?;
+    let payer = recover_signer_from_usd_send(&action, signature)?;
 
     // Optionally verify the payer has sufficient balance
     // This is a soft check - the settlement will fail if insufficient
@@ -195,7 +188,7 @@ pub async fn verify_transfer(
 
     Ok(VerifyTransferResult {
         payer,
-        action: action.clone(),
+        action,
         signature: signature.clone(),
         nonce,
     })
