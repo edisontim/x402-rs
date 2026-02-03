@@ -164,21 +164,52 @@ impl HyperCoreChainProvider {
         self.chain
     }
 
-    /// Query user's USDC balance on HyperCore.
+    /// Query user's spot token balance on HyperCore.
+    ///
+    /// Returns the available balance (total - hold) for the specified token.
+    pub async fn get_spot_balance(
+        &self,
+        user: &str,
+        token_name: &str,
+    ) -> Result<String, HyperCoreChainProviderError> {
+        let address = user.parse().map_err(|e| {
+            HyperCoreChainProviderError::ApiError(format!("Invalid address: {}", e))
+        })?;
+
+        let balances = self
+            .info_client
+            .user_token_balances(address)
+            .await
+            .map_err(|e| HyperCoreChainProviderError::ApiError(e.to_string()))?;
+
+        let Some(balance) = balances.balances.iter().find(|x| x.coin == token_name) else {
+            // Token not found means zero balance
+            return Ok("0".to_string());
+        };
+
+        let total: f64 = balance.total.parse().map_err(|e| {
+            HyperCoreChainProviderError::ApiError(format!(
+                "Failed to parse total balance for {}: {}",
+                token_name, e
+            ))
+        })?;
+        let hold: f64 = balance.hold.parse().map_err(|e| {
+            HyperCoreChainProviderError::ApiError(format!(
+                "Failed to parse hold balance for {}: {}",
+                token_name, e
+            ))
+        })?;
+
+        let available = total - hold;
+        Ok(available.to_string())
+    }
+
+    /// Query user's USDC spot balance on HyperCore.
     pub async fn get_usdc_balance(
         &self,
         user: &str,
     ) -> Result<String, HyperCoreChainProviderError> {
-        let user_state = self
-            .info_client
-            .user_state(user.parse().map_err(|e| {
-                HyperCoreChainProviderError::ApiError(format!("Invalid address: {}", e))
-            })?)
-            .await
-            .map_err(|e| HyperCoreChainProviderError::ApiError(e.to_string()))?;
-
-        // Return the withdrawable balance
-        Ok(user_state.withdrawable)
+        self.get_spot_balance(user, "USDC").await
     }
 }
 

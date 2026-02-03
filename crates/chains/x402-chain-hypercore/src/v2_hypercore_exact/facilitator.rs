@@ -164,25 +164,25 @@ pub async fn verify_transfer(
     // Recover the signer address from the EIP-712 signature (spotSend)
     let payer = recover_signer_from_spot_send(&action, &hypercore_payload.token, signature)?;
 
-    // Optionally verify the payer has sufficient balance
-    // This is a soft check - the settlement will fail if insufficient
-    #[cfg(feature = "telemetry")]
-    {
-        match provider.get_usdc_balance(&payer).await {
-            Ok(balance) => {
-                let balance_amount = USDC::parse_amount(&balance).unwrap_or(0);
-                if balance_amount < expected_amount {
-                    tracing::warn!(
-                        payer = %payer,
-                        balance = %balance,
-                        required = %requirements.amount,
-                        "Payer may have insufficient balance"
-                    );
-                }
+    match provider.get_usdc_balance(&payer).await {
+        Ok(balance) => {
+            let balance_amount = USDC::parse_amount(&balance).unwrap_or(0);
+            if balance_amount < expected_amount {
+                #[cfg(feature = "telemetry")]
+                tracing::warn!(
+                    payer = %payer,
+                    balance_raw = %balance,
+                    balance_atomic = %balance_amount,
+                    required_atomic = %expected_amount,
+                    "Payer has insufficient balance"
+                );
+                return Err(PaymentVerificationError::InsufficientFunds);
             }
-            Err(e) => {
-                tracing::warn!(payer = %payer, error = %e, "Failed to check payer balance");
-            }
+        }
+        Err(e) => {
+            #[cfg(feature = "telemetry")]
+            tracing::warn!(payer = %payer, error = %e, "Failed to check payer balance");
+            // Continue - let the settlement fail if balance is actually insufficient
         }
     }
 
@@ -264,9 +264,7 @@ pub async fn settle_transaction(
         "time": verification.action.time
     });
 
-    // Submit using the SDK's post method
-    #[allow(unused_variables)]
-    let result = exchange_client
+    let response_status = exchange_client
         .post(action.clone(), signature, verification.nonce)
         .await
         .map_err(|e| {
@@ -276,15 +274,37 @@ pub async fn settle_transaction(
             ))
         })?;
 
-    #[cfg(feature = "telemetry")]
-    tracing::info!(
-        payer = %verification.payer,
-        destination = %verification.action.destination,
-        amount = %verification.action.amount,
-        token = %verification.token,
-        result = ?result,
-        "HyperCore spot transfer settled"
-    );
+    // Check if the response indicates an error
+    // ExchangeResponseStatus is an enum with Ok(ExchangeResponse) and Err(String) variants
+    use hyperliquid_rust_sdk::ExchangeResponseStatus;
+    match &response_status {
+        ExchangeResponseStatus::Ok(success) => {
+            #[cfg(feature = "telemetry")]
+            tracing::info!(
+                payer = %verification.payer,
+                destination = %verification.action.destination,
+                amount = %verification.action.amount,
+                token = %verification.token,
+                result = ?success,
+                "HyperCore spot transfer settled successfully"
+            );
+        }
+        ExchangeResponseStatus::Err(error_msg) => {
+            #[cfg(feature = "telemetry")]
+            tracing::error!(
+                payer = %verification.payer,
+                destination = %verification.action.destination,
+                amount = %verification.action.amount,
+                token = %verification.token,
+                error = %error_msg,
+                "HyperCore spot transfer failed"
+            );
+            return Err(PaymentVerificationError::TransactionSimulation(format!(
+                "HyperCore transfer failed: {}",
+                error_msg
+            )));
+        }
+    }
 
     // Return a transaction identifier
     let payer_prefix = if verification.payer.len() >= 10 {
