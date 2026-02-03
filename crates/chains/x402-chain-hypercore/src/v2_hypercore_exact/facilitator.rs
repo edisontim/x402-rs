@@ -143,9 +143,7 @@ pub async fn verify_transfer(
     }
 
     // Validate amount
-    // The requirements amount is in micro-units (e.g., 1000000 = $1)
-    // The payload amount is in USD (e.g., "1" = $1)
-    let expected_amount = USDC::parse_amount(&requirements.amount).map_err(|e| {
+    let expected_amount: u64 = requirements.amount.parse().map_err(|e| {
         PaymentVerificationError::InvalidFormat(format!("Failed to parse expected amount: {}", e))
     })?;
     let payload_amount = USDC::parse_amount(&hypercore_payload.amount).map_err(|e| {
