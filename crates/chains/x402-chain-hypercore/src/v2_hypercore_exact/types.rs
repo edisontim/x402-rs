@@ -35,15 +35,22 @@ pub struct UsdcExtra {
 
 /// The HyperCore-specific payload containing the signed transfer action.
 ///
-/// This matches the flat structure sent by HyperCore clients:
+/// This matches the flat structure sent by HyperCore clients. It carries a
+/// `sendAsset` action (not the legacy `spotSend`), which is required for
+/// settlement to work under Hyperliquid Unified Account Mode — that mode
+/// disables the standalone spot-send action.
+///
 /// ```json
 /// {
 ///   "hyperliquidChain": "Testnet",
 ///   "signatureChainId": "0xa4b1",
 ///   "destination": "0x...",
-///   "amount": "1",
-///   "time": 1234567890,
+///   "sourceDex": "spot",
+///   "destinationDex": "spot",
 ///   "token": "USDC",
+///   "amount": "1",
+///   "fromSubAccount": "",
+///   "nonce": 1234567890,
 ///   "signature": "0x..."
 /// }
 /// ```
@@ -58,12 +65,21 @@ pub struct HyperCorePayload {
     pub signature_chain_id: String,
     /// Destination address (42-character hex).
     pub destination: String,
+    /// Source dex for the transfer. "spot" for spot balances, "" for the default perp dex.
+    #[serde(default = "default_spot_dex")]
+    pub source_dex: String,
+    /// Destination dex for the transfer. "spot" for spot balances, "" for the default perp dex.
+    #[serde(default = "default_spot_dex")]
+    pub destination_dex: String,
     /// Amount of USD to send as a string (e.g., "1" for $1).
     pub amount: String,
-    /// Timestamp in milliseconds.
-    pub time: u64,
+    /// Nonce / timestamp in milliseconds.
+    pub nonce: u64,
     /// Token being transferred (e.g., "USDC").
     pub token: String,
+    /// Sub-account to send from, or empty string for a normal account transfer.
+    #[serde(default)]
+    pub from_sub_account: String,
     /// The EIP-712 signature (hex-encoded, 65 bytes with v, r, s).
     pub signature: String,
 }
@@ -72,27 +88,37 @@ fn default_signature_chain_id() -> String {
     "0xa4b1".to_string()
 }
 
+fn default_spot_dex() -> String {
+    "spot".to_string()
+}
+
 impl HyperCorePayload {
-    /// Convert to a usdSend action structure for verification.
-    pub fn to_usd_send_action(&self) -> HyperCoreUsdSendAction {
-        HyperCoreUsdSendAction {
-            action_type: "usdSend".to_string(),
+    /// Convert to a sendAsset action structure for verification.
+    pub fn to_send_asset_action(&self) -> HyperCoreSendAssetAction {
+        HyperCoreSendAssetAction {
+            action_type: "sendAsset".to_string(),
             hyperliquid_chain: self.hyperliquid_chain.clone(),
             signature_chain_id: self.signature_chain_id.clone(),
             destination: self.destination.clone(),
+            source_dex: self.source_dex.clone(),
+            destination_dex: self.destination_dex.clone(),
+            token: self.token.clone(),
             amount: self.amount.clone(),
-            time: self.time,
+            from_sub_account: self.from_sub_account.clone(),
+            nonce: self.nonce,
         }
     }
 }
 
-/// The usdSend action structure for HyperCore transfers.
+/// The sendAsset action structure for HyperCore transfers.
 ///
-/// This is the internal representation used for EIP-712 signing and API calls.
+/// This is the internal representation used for EIP-712 signature recovery and
+/// the exchange API call. `sendAsset` is unified-account-compatible, unlike the
+/// legacy `spotSend`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HyperCoreUsdSendAction {
-    /// Action type, always "usdSend".
+pub struct HyperCoreSendAssetAction {
+    /// Action type, always "sendAsset".
     #[serde(rename = "type")]
     pub action_type: String,
     /// Chain identifier ("Mainnet" or "Testnet").
@@ -101,23 +127,16 @@ pub struct HyperCoreUsdSendAction {
     pub signature_chain_id: String,
     /// Destination address (42-character hex).
     pub destination: String,
+    /// Source dex ("spot" for spot balances, "" for the default perp dex).
+    pub source_dex: String,
+    /// Destination dex ("spot" for spot balances, "" for the default perp dex).
+    pub destination_dex: String,
+    /// Token being transferred (e.g., "USDC").
+    pub token: String,
     /// Amount of USD to send as a string (e.g., "1.5").
     pub amount: String,
-    /// Timestamp in milliseconds.
-    pub time: u64,
-}
-
-impl HyperCoreUsdSendAction {
-    /// Creates a new usdSend action.
-    pub fn new(chain: &str, destination: &str, amount: &str, time: u64) -> Self {
-        Self {
-            action_type: "usdSend".to_string(),
-            hyperliquid_chain: chain.to_string(),
-            // Default to Arbitrum chain ID for signing
-            signature_chain_id: "0xa4b1".to_string(),
-            destination: destination.to_string(),
-            amount: amount.to_string(),
-            time,
-        }
-    }
+    /// Sub-account to send from, or empty string for a normal account transfer.
+    pub from_sub_account: String,
+    /// Nonce / timestamp in milliseconds.
+    pub nonce: u64,
 }

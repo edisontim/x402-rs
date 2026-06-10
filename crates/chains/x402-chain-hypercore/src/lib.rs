@@ -8,8 +8,8 @@
 //! # Features
 //!
 //! - **V2 Protocol Support**: Implements V2 protocol with CAIP-2 chain ID addressing
-//! - **USDC Transfers**: Native `usdSend` action for USDC payments
-//! - **Spot Token Transfers**: Native `spotSend` action for any spot token
+//! - **USDC / Spot Token Transfers**: Native `sendAsset` action (unified-account
+//!   compatible) for USDC and any spot token
 //! - **EIP-712 Signing**: Uses familiar Ethereum-style wallet signatures
 //!
 //! # Architecture

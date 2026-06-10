@@ -86,7 +86,7 @@ pub struct VerifyTransferResult {
     /// The payer's address.
     pub payer: String,
     /// The verified action (constructed from the payload).
-    pub action: types::HyperCoreUsdSendAction,
+    pub action: types::HyperCoreSendAssetAction,
     /// The signature.
     pub signature: String,
     /// The nonce (timestamp used as nonce).
@@ -156,13 +156,13 @@ pub async fn verify_transfer(
     }
 
     // Convert flat payload to action structure for signature verification
-    let action = hypercore_payload.to_usd_send_action();
+    let action = hypercore_payload.to_send_asset_action();
 
-    // Use the payload timestamp as the nonce
-    let nonce = hypercore_payload.time;
+    // Use the payload nonce (millisecond timestamp)
+    let nonce = hypercore_payload.nonce;
 
-    // Recover the signer address from the EIP-712 signature (spotSend)
-    let payer = recover_signer_from_spot_send(&action, &hypercore_payload.token, signature)?;
+    // Recover the signer address from the EIP-712 signature (sendAsset)
+    let payer = recover_signer_from_send_asset(&action, signature)?;
 
     match provider.get_usdc_balance(&payer).await {
         Ok(balance) => {
@@ -197,9 +197,10 @@ pub async fn verify_transfer(
 
 /// Settle a verified transfer by submitting it to HyperCore.
 ///
-/// This function forwards the user's pre-signed `spotSend` action to the HyperCore
+/// This function forwards the user's pre-signed `sendAsset` action to the HyperCore
 /// exchange API using the SDK. The user has already signed the action, and the
-/// facilitator submits it on their behalf using a dummy signer.
+/// facilitator submits it on their behalf using a dummy signer. `sendAsset` is used
+/// (rather than `spotSend`) so settlement works under Unified Account Mode.
 pub async fn settle_transaction(
     provider: &HyperCoreChainProvider,
     verification: VerifyTransferResult,
@@ -253,15 +254,18 @@ pub async fn settle_transaction(
         PaymentVerificationError::InvalidFormat(format!("Invalid signature format: {}", e))
     })?;
 
-    // Build the spotSend action for USDC transfer from spot balance
+    // Build the sendAsset action for USDC transfer (unified-account compatible).
     let action = serde_json::json!({
-        "type": "spotSend",
+        "type": "sendAsset",
         "hyperliquidChain": verification.action.hyperliquid_chain,
         "signatureChainId": verification.action.signature_chain_id,
         "destination": verification.action.destination,
-        "token": verification.token,
+        "sourceDex": verification.action.source_dex,
+        "destinationDex": verification.action.destination_dex,
+        "token": verification.action.token,
         "amount": verification.action.amount,
-        "time": verification.action.time
+        "fromSubAccount": verification.action.from_sub_account,
+        "nonce": verification.action.nonce
     });
 
     let response_status = exchange_client
@@ -319,10 +323,9 @@ pub async fn settle_transaction(
     ))
 }
 
-/// Recover the signer address from a spotSend EIP-712 signature.
-fn recover_signer_from_spot_send(
-    action: &types::HyperCoreUsdSendAction,
-    token: &str,
+/// Recover the signer address from a sendAsset EIP-712 signature.
+fn recover_signer_from_send_asset(
+    action: &types::HyperCoreSendAssetAction,
     signature: &str,
 ) -> Result<String, PaymentVerificationError> {
     use ethers::types::{H256, RecoveryMessage, Signature};
@@ -340,10 +343,10 @@ fn recover_signer_from_spot_send(
         )));
     }
 
-    // Construct the EIP-712 typed data hash for spotSend
+    // Construct the EIP-712 typed data hash for sendAsset
     // This follows the Hyperliquid signing spec
     let domain_separator = compute_domain_separator(&action.signature_chain_id)?;
-    let struct_hash = compute_spot_send_struct_hash(action, token)?;
+    let struct_hash = compute_send_asset_struct_hash(action)?;
     let message_hash = compute_typed_data_hash(&domain_separator, &struct_hash);
 
     // Recover the address
@@ -393,31 +396,40 @@ fn compute_domain_separator(chain_id_hex: &str) -> Result<[u8; 32], PaymentVerif
     Ok(keccak256(&encoded))
 }
 
-/// Compute the struct hash for a spotSend action.
-fn compute_spot_send_struct_hash(
-    action: &types::HyperCoreUsdSendAction,
-    token: &str,
+/// Compute the struct hash for a sendAsset action.
+///
+/// Field order must exactly match Hyperliquid's `SEND_ASSET_SIGN_TYPES`:
+/// hyperliquidChain, destination, sourceDex, destinationDex, token, amount,
+/// fromSubAccount (all strings), nonce (uint64).
+fn compute_send_asset_struct_hash(
+    action: &types::HyperCoreSendAssetAction,
 ) -> Result<[u8; 32], PaymentVerificationError> {
     use ethers::utils::keccak256;
 
-    // Type hash: keccak256("HyperliquidTransaction:SpotSend(string hyperliquidChain,string destination,string token,string amount,uint64 time)")
+    // Type hash: keccak256("HyperliquidTransaction:SendAsset(string hyperliquidChain,string destination,string sourceDex,string destinationDex,string token,string amount,string fromSubAccount,uint64 nonce)")
     let type_hash = keccak256(
-        b"HyperliquidTransaction:SpotSend(string hyperliquidChain,string destination,string token,string amount,uint64 time)",
+        b"HyperliquidTransaction:SendAsset(string hyperliquidChain,string destination,string sourceDex,string destinationDex,string token,string amount,string fromSubAccount,uint64 nonce)",
     );
 
     let chain_hash = keccak256(action.hyperliquid_chain.as_bytes());
     let destination_hash = keccak256(action.destination.as_bytes());
-    let token_hash = keccak256(token.as_bytes());
+    let source_dex_hash = keccak256(action.source_dex.as_bytes());
+    let destination_dex_hash = keccak256(action.destination_dex.as_bytes());
+    let token_hash = keccak256(action.token.as_bytes());
     let amount_hash = keccak256(action.amount.as_bytes());
+    let from_sub_account_hash = keccak256(action.from_sub_account.as_bytes());
 
-    // Encode and hash
-    let mut encoded = Vec::with_capacity(192);
+    // Encode and hash (typeHash + each field's encoded value)
+    let mut encoded = Vec::with_capacity(288);
     encoded.extend_from_slice(&type_hash);
     encoded.extend_from_slice(&chain_hash);
     encoded.extend_from_slice(&destination_hash);
+    encoded.extend_from_slice(&source_dex_hash);
+    encoded.extend_from_slice(&destination_dex_hash);
     encoded.extend_from_slice(&token_hash);
     encoded.extend_from_slice(&amount_hash);
-    encoded.extend_from_slice(&encode_u64(action.time));
+    encoded.extend_from_slice(&from_sub_account_hash);
+    encoded.extend_from_slice(&encode_u64(action.nonce));
 
     Ok(keccak256(&encoded))
 }
